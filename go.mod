@@ -1,4 +1,4 @@
-module tforg
+module github.com/FutureFrenzy96/tforg
 
 go 1.23.0
 
