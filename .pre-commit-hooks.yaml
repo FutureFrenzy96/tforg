@@ -1,0 +1,14 @@
+# Hook definition for the pre-commit framework (https://pre-commit.com).
+- id: tforg
+  name: tforg (terraform fmt + file organization)
+  description: >-
+    Formats Terraform files (terraform fmt equivalent) and moves top-level
+    blocks into their conventional files (main.tf, data.tf, variables.tf, ...).
+  entry: tforg
+  language: golang
+  files: \.tf$
+  exclude: \.terraform/
+  # pre-commit splits big file lists into parallel invocations; tforg must see
+  # all files of a directory in one process so destination files are created
+  # exactly once.
+  require_serial: true

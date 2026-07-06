@@ -1,0 +1,27 @@
+#!/bin/sh
+# Pre-commit hook: run tforg (terraform fmt + block organization) over the
+# staged .tf files. If tforg rewrites anything, the commit is aborted so the
+# changes can be reviewed and re-staged.
+#
+# Install: copy into .git/hooks/pre-commit and chmod +x, or set core.hooksPath.
+# Requires tforg on PATH.
+
+if git diff --cached --name-only --diff-filter=ACMR -- '*.tf' | grep -q .; then
+	:
+else
+	exit 0
+fi
+
+git diff --cached --name-only --diff-filter=ACMR -z -- '*.tf' | xargs -0 tforg
+status=$?
+
+if [ "$status" -eq 0 ]; then
+	exit 0
+fi
+
+if [ "$status" -eq 1 ]; then
+	echo "" >&2
+	echo "tforg reorganized or reformatted the files listed above." >&2
+	echo "Review the changes, 'git add' them, and commit again." >&2
+fi
+exit "$status"
