@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 const usageText = `tforg — fast Terraform formatter + file organizer
@@ -36,6 +37,8 @@ Flags:
   -fmt-only        format only; do not move blocks between files
   -map type=file   override a destination (repeatable, comma-separated),
                    e.g. -map terraform=terraform.tf,module=modules.tf
+  -no-color        disable colored output (NO_COLOR and CLICOLOR_FORCE are
+                   also honored)
   -quiet           suppress non-error output
 
 Exit codes: 0 nothing to do · 1 changes made (or needed with -check) · 2 error
@@ -64,6 +67,7 @@ func (m mapFlag) Set(v string) error {
 }
 
 func run(args []string) int {
+	start := time.Now()
 	cfg := config{dest: map[string]string{}}
 	for k, v := range defaultDest {
 		cfg.dest[k] = v
@@ -71,6 +75,7 @@ func run(args []string) int {
 
 	fl := flag.NewFlagSet("tforg", flag.ContinueOnError)
 	fl.Usage = func() { fmt.Fprint(os.Stderr, usageText) }
+	noColor := fl.Bool("no-color", false, "")
 	fl.BoolVar(&cfg.check, "check", false, "")
 	fl.BoolVar(&cfg.quiet, "quiet", false, "")
 	fl.BoolVar(&cfg.fmtOnly, "fmt-only", false, "")
@@ -78,6 +83,7 @@ func run(args []string) int {
 	if err := fl.Parse(args); err != nil {
 		return 2
 	}
+	pal := newPalette(*noColor)
 
 	paths := fl.Args()
 	if len(paths) == 0 {
@@ -86,10 +92,14 @@ func run(args []string) int {
 
 	targets, errs := collectTargets(paths)
 	for _, e := range errs {
-		fmt.Fprintln(os.Stderr, "tforg:", e)
+		fmt.Fprintln(os.Stderr, pal.red("✗"), e)
 	}
 	if len(errs) > 0 {
 		return 2
+	}
+	totalFiles := 0
+	for _, bases := range targets {
+		totalFiles += len(bases)
 	}
 
 	dirs := make([]string, 0, len(targets))
@@ -118,19 +128,17 @@ func run(args []string) int {
 	}
 	wg.Wait()
 
-	return report(outcomes, applyErrs, cfg)
+	return report(outcomes, applyErrs, cfg, pal, totalFiles, time.Since(start))
 }
 
-func report(outcomes []dirOutcome, applyErrs [][]string, cfg config) int {
+func report(outcomes []dirOutcome, applyErrs [][]string, cfg config, pal palette, totalFiles int, elapsed time.Duration) int {
 	cwd, _ := os.Getwd()
-	rel := func(dir, base string) string {
-		p := filepath.Join(dir, base)
-		if r, err := filepath.Rel(cwd, p); err == nil && !strings.HasPrefix(r, "..") {
+	relDir := func(dir string) string {
+		if r, err := filepath.Rel(cwd, dir); err == nil && !strings.HasPrefix(r, "..") {
 			return r
 		}
-		return p
+		return dir
 	}
-
 	verb := func(past, cond string) string {
 		if cfg.check {
 			return cond
@@ -138,48 +146,91 @@ func report(outcomes []dirOutcome, applyErrs [][]string, cfg config) int {
 		return past
 	}
 
-	hadErr, changed := false, false
+	nErrs, changedFiles, changedDirs := 0, 0, 0
 	for i, o := range outcomes {
 		for _, e := range o.errs {
-			fmt.Fprintln(os.Stderr, "tforg:", e)
-			hadErr = true
+			fmt.Fprintln(os.Stderr, pal.red("✗"), e)
+			nErrs++
 		}
 		for _, e := range applyErrs[i] {
-			fmt.Fprintln(os.Stderr, "tforg:", e)
-			hadErr = true
+			fmt.Fprintln(os.Stderr, pal.red("✗"), e)
+			nErrs++
 		}
-		if len(o.errs) > 0 {
+		if len(o.errs) > 0 || !o.changed() {
 			continue
 		}
-		if o.changed() {
-			changed = true
-		}
+		changedDirs++
+		changedFiles += len(o.writes) + len(o.deletes)
 		if cfg.quiet {
 			continue
 		}
+
+		fmt.Println(pal.bold(relDir(o.dir)))
+		width := 0
 		for _, m := range o.moves {
-			base, desc, _ := strings.Cut(m, ": ")
-			fmt.Printf("%s: %s %s\n", rel(o.dir, base), verb("moved", "would move"), desc)
+			if n := len(m.from) + len(m.dest); n > width {
+				width = n
+			}
 		}
-		for base := range o.creates {
-			fmt.Printf("%s: %s\n", rel(o.dir, base), verb("created", "would create"))
+		for _, m := range o.moves {
+			pad := strings.Repeat(" ", width-len(m.from)-len(m.dest))
+			fmt.Printf("  %s %s %s%s  %s\n",
+				pal.file(m.from), pal.dim("→"), pal.file(m.dest), pad, pal.dim(m.desc))
 		}
-		for base := range o.deletes {
-			fmt.Printf("%s: %s\n", rel(o.dir, base), verb("deleted (now empty)", "would delete (now empty)"))
+		for _, base := range sortedKeys(o.creates) {
+			fmt.Printf("  %s %s  %s\n", pal.green("+"), pal.file(base), pal.green(verb("created", "would create")))
+		}
+		for _, base := range sortedKeys(o.deletes) {
+			fmt.Printf("  %s %s  %s\n", pal.red("-"), pal.file(base), pal.red(verb("deleted (empty)", "would delete (empty)")))
 		}
 		for _, base := range o.fmtOnly {
-			fmt.Printf("%s: %s\n", rel(o.dir, base), verb("formatted", "needs formatting"))
+			fmt.Printf("  %s %s  %s\n", pal.dim("~"), pal.file(base), pal.dim(verb("reformatted", "needs reformatting")))
+		}
+		fmt.Println()
+	}
+
+	dur := elapsed.Round(time.Millisecond)
+	if dur == 0 {
+		dur = elapsed.Round(time.Microsecond)
+	}
+	summary := func(s string) {
+		if !cfg.quiet {
+			fmt.Println(s)
 		}
 	}
 
 	switch {
-	case hadErr:
+	case nErrs > 0:
+		fmt.Fprintln(os.Stderr, pal.red(fmt.Sprintf("✗ %s", plural(nErrs, "error", "errors"))))
 		return 2
-	case changed:
+	case changedFiles > 0 && cfg.check:
+		summary(pal.yellow(fmt.Sprintf("✗ %s in %s need changes", plural(changedFiles, "file", "files"), plural(changedDirs, "directory", "directories"))) +
+			" " + pal.dim("(run tforg to apply)"))
+		return 1
+	case changedFiles > 0:
+		summary(pal.green(fmt.Sprintf("✓ fixed %s in %s", plural(changedFiles, "file", "files"), plural(changedDirs, "directory", "directories"))) +
+			" " + pal.dim(fmt.Sprintf("· %s", dur)))
 		return 1
 	default:
+		summary(pal.dim(fmt.Sprintf("✓ nothing to do · %s clean · %s", plural(totalFiles, "file", "files"), dur)))
 		return 0
 	}
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return fmt.Sprintf("1 %s", one)
+	}
+	return fmt.Sprintf("%d %s", n, many)
+}
+
+func sortedKeys(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // collectTargets expands the given paths into a map of directory ->

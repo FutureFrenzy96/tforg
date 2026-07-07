@@ -31,6 +31,11 @@ type moveText struct {
 	desc string
 }
 
+// moveEvent records one block relocation for reporting.
+type moveEvent struct {
+	from, dest, desc string
+}
+
 // dirOutcome is the computed result for one directory. Nothing is written to
 // disk until applyOutcome runs.
 type dirOutcome struct {
@@ -38,8 +43,8 @@ type dirOutcome struct {
 	writes  map[string][]byte // base name -> new file content
 	creates map[string]bool   // subset of writes that are new files
 	deletes map[string]bool   // files emptied by moves
-	moves   []string          // human-readable move descriptions
-	fmtOnly []string          // files changed by formatting alone
+	moves   []moveEvent
+	fmtOnly []string // files changed by formatting alone
 	errs    []string
 }
 
@@ -110,7 +115,7 @@ func processDir(dir string, bases []string, cfg config) dirOutcome {
 				from: base,
 				desc: blockDesc(blk),
 			})
-			out.moves = append(out.moves, fmt.Sprintf("%s: %s → %s", base, blockDesc(blk), dest))
+			out.moves = append(out.moves, moveEvent{from: base, dest: dest, desc: blockDesc(blk)})
 		}
 	}
 

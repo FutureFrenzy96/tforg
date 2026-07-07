@@ -46,8 +46,28 @@ tforg modules/vpc/x.tf   # ... a single file (blocks move to siblings in its dir
 tforg -check .           # report what would change, write nothing (CI-friendly)
 tforg -fmt-only .        # formatting only, no block moves
 tforg -quiet .           # errors only
+tforg -no-color .        # plain output (NO_COLOR / CLICOLOR_FORCE also honored)
 tforg -map terraform=terraform.tf,module=modules.tf .   # override destinations
 ```
+
+Output is grouped per directory and color-coded — each conventional file has
+its own color (green `main.tf`, yellow `variables.tf`, blue `data.tf`, ...),
+`+`/`-`/`~` mark created, deleted, and reformatted files, and a summary line
+shows the total and elapsed time:
+
+```
+example
+  everything.tf → versions.tf   terraform
+  everything.tf → variables.tf  variable "region"
+  + variables.tf  created
+  - everything.tf  deleted (empty)
+
+✓ fixed 12 files in 2 directories · 6ms
+```
+
+Colors turn off automatically when output is piped (CI logs stay clean) and
+under `NO_COLOR`; set `CLICOLOR_FORCE=1` to keep them when a hook runner
+captures output.
 
 Exit codes: `0` nothing to do · `1` changes were made (or are needed, with
 `-check`) · `2` error (e.g. a file that does not parse).
