@@ -20,6 +20,7 @@ type config struct {
 	sort    bool
 	diff    bool
 	dest    map[string]string
+	rules   []placeRule
 }
 
 // span is a half-open byte range [start, end) within a source file.
@@ -130,8 +131,8 @@ func processDir(dir string, bases []string, cfg config) dirOutcome {
 				continue
 			}
 			for _, blk := range st.blocks {
-				dest := cfg.dest[blk.Type]
-				if dest == "" || strings.EqualFold(dest, st.base) {
+				dest, keep := cfg.destFor(blk)
+				if keep || dest == "" || strings.EqualFold(dest, st.base) {
 					continue
 				}
 				sp := blockSpan(st.src, blk, st.lineStarts, st.flags)

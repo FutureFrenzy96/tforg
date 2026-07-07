@@ -77,6 +77,42 @@ captures output.
 Exit codes: `0` nothing to do · `1` changes were made (or are needed, with
 `-check`) · `2` error (e.g. a file that does not parse).
 
+## Configuration: `.tforg.hcl`
+
+Some blocks legitimately belong outside the default convention — say a module
+that only loads data sources, which you want in `data.tf` rather than
+`main.tf`. Rather than annotating your Terraform with comments, declare the
+exception once in a `.tforg.hcl` at the repo root:
+
+```hcl
+place "module" "network_data" {
+  file = "data.tf"
+}
+```
+
+Rules are checked before the type mapping and the first match wins; anything
+unmatched follows the normal convention. The second label is the block's name
+(labels joined with `.` for two-label blocks, so `aws_instance.web` addresses
+a specific resource) and may be a glob (`data_*`) if you later adopt a naming
+convention. Two other forms are supported:
+
+```hcl
+place "module" "legacy" {
+  keep = true            # leave it wherever it currently lives
+}
+
+map {
+  terraform = "terraform.tf"   # change a type's default destination
+}
+```
+
+The nearest `.tforg.hcl` — in the target directory or any parent — applies,
+so one file at the repo root covers every nested module. `-config path`
+points at an explicit file, `-no-config` ignores config files entirely, and
+CLI flags always win (`-map 'module:network_data=data.tf'` is the one-off
+equivalent of a `place` rule). Placement stays fully deterministic and
+idempotent: it depends only on your code and config, never on run history.
+
 ## Git pre-commit hook
 
 From inside any repo, run:

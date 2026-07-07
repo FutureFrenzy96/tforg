@@ -40,12 +40,22 @@ Flags:
   -diff            show unified diffs of pending changes (implies -check)
   -sort            alphabetize variable/output blocks within their files
   -fmt-only        format only; do not move blocks between files
-  -map type=file   override a destination (repeatable, comma-separated),
-                   e.g. -map terraform=terraform.tf,module=modules.tf
+  -map type=file   override a type's destination, or pin one block with
+                   type:name=file (repeatable, comma-separated), e.g.
+                   -map terraform=terraform.tf,module:network_data=data.tf
+  -config path     use this config file instead of discovering .tforg.hcl
+  -no-config       ignore .tforg.hcl files
   -no-color        disable colored output (NO_COLOR and CLICOLOR_FORCE are
                    also honored)
   -quiet           suppress non-error output
   -version         print version
+
+Config:
+  A .tforg.hcl in the target directory or any parent applies placement rules
+  ahead of the type mapping (first match wins; -map flags win over the file):
+    place "module" "network_data" { file = "data.tf" }   # pin to a file
+    place "module" "legacy" { keep = true }              # leave where it is
+    map { terraform = "terraform.tf" }                   # change type defaults
 
 Exit codes: 0 nothing to do · 1 changes made (or needed with -check) · 2 error
 `
@@ -54,20 +64,33 @@ func main() {
 	os.Exit(run(os.Args[1:]))
 }
 
-type mapFlag map[string]string
+type mapFlag struct {
+	dest  map[string]string
+	rules *[]placeRule
+}
 
-func (m mapFlag) String() string { return "" }
+func (m *mapFlag) String() string { return "" }
 
-func (m mapFlag) Set(v string) error {
+func (m *mapFlag) Set(v string) error {
 	for _, pair := range strings.Split(v, ",") {
 		k, val, ok := strings.Cut(strings.TrimSpace(pair), "=")
 		if !ok || k == "" || val == "" {
-			return fmt.Errorf("expected type=file.tf, got %q", pair)
+			return fmt.Errorf("expected type=file.tf or type:name=file.tf, got %q", pair)
 		}
-		if !strings.HasSuffix(val, ".tf") || strings.ContainsAny(val, "/\\") {
-			return fmt.Errorf("destination must be a bare .tf file name, got %q", val)
+		if err := validDestName(val); err != nil {
+			return err
 		}
-		m[k] = val
+		if typ, pattern, hasPattern := strings.Cut(k, ":"); hasPattern {
+			if typ == "" || pattern == "" {
+				return fmt.Errorf("expected type:name=file.tf, got %q", pair)
+			}
+			if err := validPattern(pattern); err != nil {
+				return err
+			}
+			*m.rules = append(*m.rules, placeRule{blockType: typ, pattern: pattern, file: val})
+		} else {
+			m.dest[k] = val
+		}
 	}
 	return nil
 }
@@ -78,22 +101,23 @@ func run(args []string) int {
 		return installHook(args[1:])
 	}
 
-	cfg := config{dest: map[string]string{}}
-	for k, v := range defaultDest {
-		cfg.dest[k] = v
-	}
+	cfg := config{}
+	cliDest := map[string]string{}
+	var cliRules []placeRule
 
 	fl := flag.NewFlagSet("tforg", flag.ContinueOnError)
 	fl.Usage = func() { fmt.Fprint(os.Stderr, usageText) }
 	noColor := fl.Bool("no-color", false, "")
 	staged := fl.Bool("staged", false, "")
 	showVersion := fl.Bool("version", false, "")
+	configPath := fl.String("config", "", "")
+	noConfig := fl.Bool("no-config", false, "")
 	fl.BoolVar(&cfg.check, "check", false, "")
 	fl.BoolVar(&cfg.diff, "diff", false, "")
 	fl.BoolVar(&cfg.sort, "sort", false, "")
 	fl.BoolVar(&cfg.quiet, "quiet", false, "")
 	fl.BoolVar(&cfg.fmtOnly, "fmt-only", false, "")
-	fl.Var(mapFlag(cfg.dest), "map", "")
+	fl.Var(&mapFlag{dest: cliDest, rules: &cliRules}, "map", "")
 	if err := fl.Parse(args); err != nil {
 		return 2
 	}
@@ -149,6 +173,23 @@ func run(args []string) int {
 	}
 	sort.Strings(dirs)
 
+	// Resolve each directory's .tforg.hcl (nearest ancestor wins) serially,
+	// so the parallel workers below only read their own config value.
+	loader, err := newConfigLoader(*noConfig, *configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, pal.red("✗"), err)
+		return 2
+	}
+	dirCfgs := make([]config, len(dirs))
+	for i, dir := range dirs {
+		rc, err := loader.forDir(dir)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, pal.red("✗"), err)
+			return 2
+		}
+		dirCfgs[i] = effectiveConfig(cfg, rc, cliDest, cliRules)
+	}
+
 	// Each directory is an independent Terraform module; process them in
 	// parallel and write results from the worker as well.
 	outcomes := make([]dirOutcome, len(dirs))
@@ -161,7 +202,7 @@ func run(args []string) int {
 		go func(i int, dir string) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			outcomes[i] = processDir(dir, targets[dir], cfg)
+			outcomes[i] = processDir(dir, targets[dir], dirCfgs[i])
 			if !cfg.check && len(outcomes[i].errs) == 0 {
 				applyErrs[i] = applyOutcome(outcomes[i])
 			}
