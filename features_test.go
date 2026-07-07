@@ -281,7 +281,19 @@ func TestInstallHook(t *testing.T) {
 		t.Error("hook not executable")
 	}
 	b, _ := os.ReadFile(path)
-	if !strings.Contains(string(b), "tforg -staged") {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	// The hook must not depend on PATH: GUI git clients don't have
+	// shell-profile PATH additions, so the binary path is embedded.
+	if !strings.Contains(string(b), `TFORG="`+exe+`"`) {
+		t.Errorf("hook must embed the absolute binary path:\n%s", b)
+	}
+	if !strings.Contains(string(b), `exec "$TFORG" -staged`) {
 		t.Errorf("hook script wrong:\n%s", b)
 	}
 

@@ -1,6 +1,12 @@
 #!/bin/sh
 # Pre-commit hook: format and organize staged Terraform files. Aborts the
 # commit when files are rewritten so the changes can be reviewed and
-# re-staged. Install with `tforg install-hook`, or copy this file into
-# .git/hooks/pre-commit and chmod +x. Requires tforg on PATH.
+# re-staged. Prefer `tforg install-hook`, which embeds the absolute binary
+# path; this copyable version extends PATH so GUI git clients (Rider,
+# VS Code) that lack shell-profile PATH additions still find tforg.
+PATH="$PATH:$HOME/go/bin"
+command -v tforg >/dev/null 2>&1 || {
+	echo "tforg not found on PATH; install it or run 'tforg install-hook'" >&2
+	exit 2
+}
 exec tforg -staged
