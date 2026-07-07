@@ -31,15 +31,21 @@ Blocks only move between files in the same directory.
 Usage:
   tforg [flags] [path ...]     paths are directories (recursive) or .tf files;
                                defaults to the current directory
+  tforg install-hook           write a .git/hooks/pre-commit that runs
+                               'tforg -staged' (-force overwrites an existing hook)
 
 Flags:
+  -staged          target the .tf files currently staged in git
   -check           report what would change, write nothing; exit 1 if dirty
+  -diff            show unified diffs of pending changes (implies -check)
+  -sort            alphabetize variable/output blocks within their files
   -fmt-only        format only; do not move blocks between files
   -map type=file   override a destination (repeatable, comma-separated),
                    e.g. -map terraform=terraform.tf,module=modules.tf
   -no-color        disable colored output (NO_COLOR and CLICOLOR_FORCE are
                    also honored)
   -quiet           suppress non-error output
+  -version         print version
 
 Exit codes: 0 nothing to do · 1 changes made (or needed with -check) · 2 error
 `
@@ -68,6 +74,10 @@ func (m mapFlag) Set(v string) error {
 
 func run(args []string) int {
 	start := time.Now()
+	if len(args) > 0 && args[0] == "install-hook" {
+		return installHook(args[1:])
+	}
+
 	cfg := config{dest: map[string]string{}}
 	for k, v := range defaultDest {
 		cfg.dest[k] = v
@@ -76,7 +86,11 @@ func run(args []string) int {
 	fl := flag.NewFlagSet("tforg", flag.ContinueOnError)
 	fl.Usage = func() { fmt.Fprint(os.Stderr, usageText) }
 	noColor := fl.Bool("no-color", false, "")
+	staged := fl.Bool("staged", false, "")
+	showVersion := fl.Bool("version", false, "")
 	fl.BoolVar(&cfg.check, "check", false, "")
+	fl.BoolVar(&cfg.diff, "diff", false, "")
+	fl.BoolVar(&cfg.sort, "sort", false, "")
 	fl.BoolVar(&cfg.quiet, "quiet", false, "")
 	fl.BoolVar(&cfg.fmtOnly, "fmt-only", false, "")
 	fl.Var(mapFlag(cfg.dest), "map", "")
@@ -84,8 +98,35 @@ func run(args []string) int {
 		return 2
 	}
 	pal := newPalette(*noColor)
+	if *showVersion {
+		fmt.Println("tforg", versionString())
+		return 0
+	}
+	if cfg.diff {
+		cfg.check = true
+	}
 
 	paths := fl.Args()
+	if *staged {
+		if len(paths) > 0 {
+			fmt.Fprintln(os.Stderr, pal.red("✗"), "-staged cannot be combined with explicit paths")
+			return 2
+		}
+		var errs []string
+		paths, errs = stagedTfFiles()
+		for _, e := range errs {
+			fmt.Fprintln(os.Stderr, pal.red("✗"), e)
+		}
+		if len(errs) > 0 {
+			return 2
+		}
+		if len(paths) == 0 {
+			if !cfg.quiet {
+				fmt.Println(pal.dim("✓ no staged .tf files"))
+			}
+			return 0
+		}
+	}
 	if len(paths) == 0 {
 		paths = []string{"."}
 	}
@@ -186,6 +227,14 @@ func report(outcomes []dirOutcome, applyErrs [][]string, cfg config, pal palette
 		for _, base := range o.fmtOnly {
 			fmt.Printf("  %s %s  %s\n", pal.dim("~"), pal.file(base), pal.dim(verb("reformatted", "needs reformatting")))
 		}
+		if cfg.diff {
+			for _, base := range sortedKeys(o.writes) {
+				printDiff(pal, filepath.Join(relDir(o.dir), base), o.origs[base], o.writes[base])
+			}
+			for _, base := range sortedKeys(o.deletes) {
+				printDiff(pal, filepath.Join(relDir(o.dir), base), o.origs[base], nil)
+			}
+		}
 		fmt.Println()
 	}
 
@@ -224,7 +273,7 @@ func plural(n int, one, many string) string {
 	return fmt.Sprintf("%d %s", n, many)
 }
 
-func sortedKeys(m map[string]bool) []string {
+func sortedKeys[V any](m map[string]V) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)

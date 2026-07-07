@@ -43,11 +43,16 @@ go install .                            # puts tforg on your GOPATH/bin
 tforg                    # format + organize the current directory, recursively
 tforg path/to/repo       # ... a specific directory
 tforg modules/vpc/x.tf   # ... a single file (blocks move to siblings in its dir)
+tforg -staged            # ... the .tf files currently staged in git
 tforg -check .           # report what would change, write nothing (CI-friendly)
+tforg -diff .            # unified diff of pending changes (implies -check)
+tforg -sort .            # also alphabetize variable/output blocks
 tforg -fmt-only .        # formatting only, no block moves
 tforg -quiet .           # errors only
 tforg -no-color .        # plain output (NO_COLOR / CLICOLOR_FORCE also honored)
 tforg -map terraform=terraform.tf,module=modules.tf .   # override destinations
+tforg -version           # print version
+tforg install-hook       # write .git/hooks/pre-commit for the current repo
 ```
 
 Output is grouped per directory and color-coded — each conventional file has
@@ -74,15 +79,17 @@ Exit codes: `0` nothing to do · `1` changes were made (or are needed, with
 
 ## Git pre-commit hook
 
-Copy [hooks/pre-commit](hooks/pre-commit) into your repo's `.git/hooks/`
-directory (and `chmod +x` it), or point `core.hooksPath` at a shared hooks
-directory. The hook runs `tforg` on the staged `.tf` files only; if anything
-was rewritten it aborts the commit so you can review and re-stage:
+From inside any repo, run:
 
 ```sh
-cp hooks/pre-commit /path/to/your/repo/.git/hooks/pre-commit
-chmod +x /path/to/your/repo/.git/hooks/pre-commit
+tforg install-hook
 ```
+
+This writes a `.git/hooks/pre-commit` (respecting `core.hooksPath`; add
+`-force` to overwrite an existing hook) that runs `tforg -staged`: only the
+staged `.tf` files are checked, and if anything is rewritten the commit is
+aborted so you can review and re-stage. The same script lives at
+[hooks/pre-commit](hooks/pre-commit) if you prefer to copy it manually.
 
 Note for partial staging (`git add -p`): like any formatter hook, `tforg`
 rewrites the working-tree file, so staged and unstaged hunks of the same file
@@ -102,6 +109,18 @@ repos:
 
 ## Behavior details
 
+- **Duplicate detection**: two blocks with the same address in one module
+  (`variable "region"` defined twice, identical resource addresses, ...) are
+  reported as errors (exit `2`) and nothing is moved — catching at commit time
+  what Terraform would only surface at plan time. Provider aliases, repeated
+  `terraform`/`locals` blocks, and override files are exempt, as Terraform
+  allows those.
+- **Sorting** (`-sort`, opt-in): variable and output blocks are alphabetized
+  within their files. A file is skipped when reordering would be unsafe (mixed
+  block types, or standalone comments between blocks). Resources are never
+  reordered.
+- **Atomic writes**: files are written via temp-file-and-rename, so an
+  interrupted run can never leave a truncated `.tf` behind.
 - **Comments**: comment lines directly above a block move with it; comments
   separated from a block by a blank line stay where they are. A comment on the
   closing-brace line travels with the block.
