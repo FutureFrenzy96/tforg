@@ -19,6 +19,7 @@ type config struct {
 	fmtOnly bool
 	sort    bool
 	diff    bool
+	staged  bool
 	dest    map[string]string
 	rules   []placeRule
 }

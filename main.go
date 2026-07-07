@@ -132,6 +132,7 @@ func run(args []string) int {
 
 	paths := fl.Args()
 	if *staged {
+		cfg.staged = true
 		if len(paths) > 0 {
 			fmt.Fprintln(os.Stderr, pal.red("✗"), "-staged cannot be combined with explicit paths")
 			return 2
@@ -300,6 +301,9 @@ func report(outcomes []dirOutcome, applyErrs [][]string, cfg config, pal palette
 	case changedFiles > 0:
 		summary(pal.green(fmt.Sprintf("✓ fixed %s in %s", plural(changedFiles, "file", "files"), plural(changedDirs, "directory", "directories"))) +
 			" " + pal.dim(fmt.Sprintf("· %s", dur)))
+		if cfg.staged {
+			summary(pal.yellow("! commit aborted so you can review — stage the fixed files and commit again"))
+		}
 		return 1
 	default:
 		summary(pal.dim(fmt.Sprintf("✓ nothing to do · %s clean · %s", plural(totalFiles, "file", "files"), dur)))
