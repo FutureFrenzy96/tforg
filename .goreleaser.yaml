@@ -1,0 +1,53 @@
+version: 2
+
+project_name: tforg
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^test"
+      - "^chore"
+
+release:
+  footer: |
+    ---
+    Install with `go install github.com/FutureFrenzy96/tforg@{{ .Tag }}`
+    or download a prebuilt binary above.
+
+# Homebrew tap — to enable:
+#   1. Create a repo named FutureFrenzy96/homebrew-tap
+#   2. Add a repo secret HOMEBREW_TAP_GITHUB_TOKEN (classic PAT, repo scope)
+#      and uncomment its line in .github/workflows/release.yml
+#   3. Uncomment this section; users then: brew install FutureFrenzy96/tap/tforg
+#
+# brews:
+#   - repository:
+#       owner: FutureFrenzy96
+#       name: homebrew-tap
+#       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+#     homepage: https://github.com/FutureFrenzy96/tforg
+#     description: Fast Terraform formatter and file organizer
+#     directory: Formula
+#     install: bin.install "tforg"
+#     test: system "#{bin}/tforg", "-version"

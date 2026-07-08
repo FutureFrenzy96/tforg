@@ -1,5 +1,7 @@
 # tforg — fast Terraform formatter + file organizer
 
+[![CI](https://github.com/FutureFrenzy96/tforg/actions/workflows/ci.yml/badge.svg)](https://github.com/FutureFrenzy96/tforg/actions/workflows/ci.yml)
+
 `tforg` does two things to a Terraform codebase, very fast:
 
 1. **Formats** every `.tf` file with output byte-identical to `terraform fmt`
@@ -31,10 +33,29 @@ a full run takes ~50ms and a no-op verification ~25ms.
 
 ## Install
 
+**With Go:**
+
 ```sh
-go build -ldflags="-s -w" -o tforg .   # local build
-# or
-go install .                            # puts tforg on your GOPATH/bin
+go install github.com/FutureFrenzy96/tforg@latest   # or pin @v0.1.0
+```
+
+`go install` puts the binary in `$(go env GOPATH)/bin` — make sure that's on
+your PATH (`export PATH="$PATH:$(go env GOPATH)/bin"` in your shell profile).
+
+**Without Go:** download a prebuilt binary for macOS/Linux/Windows from the
+[releases page](https://github.com/FutureFrenzy96/tforg/releases), unpack it,
+and put `tforg` somewhere on your PATH.
+
+**From a checkout:** `go build -ldflags="-s -w" -o tforg .`
+
+### Releasing (maintainers)
+
+Releases are automated: push a tag and GitHub Actions runs GoReleaser, which
+builds binaries for all platforms, generates checksums and a changelog, and
+publishes the release.
+
+```sh
+git tag v0.1.0 && git push origin main --tags
 ```
 
 ## Usage
@@ -132,12 +153,11 @@ rewrites the working-tree file, so staged and unstaged hunks of the same file
 are formatted together.
 
 If you use the [pre-commit](https://pre-commit.com) framework, this repo ships
-a [.pre-commit-hooks.yaml](.pre-commit-hooks.yaml), so once the repo is pushed
-somewhere you can reference it:
+a [.pre-commit-hooks.yaml](.pre-commit-hooks.yaml):
 
 ```yaml
 repos:
-  - repo: https://your.git.host/you/tforg
+  - repo: https://github.com/FutureFrenzy96/tforg
     rev: v0.1.0
     hooks:
       - id: tforg
