@@ -205,6 +205,7 @@ func Run(args []string, version string) int {
 	// directory) or by the nearest config's ignore list (relative to the
 	// config file) — generated Terraform must never be rewritten.
 	cwd, _ := os.Getwd()
+	excluded := 0
 	for dir, bases := range targets {
 		rc, err := loader.ForDir(dir)
 		if err != nil {
@@ -215,9 +216,11 @@ func Run(args []string, version string) int {
 		for _, base := range bases {
 			full := filepath.Join(dir, base)
 			if engine.MatchesIgnore(cliExcludes, cwd, full) {
+				excluded++
 				continue
 			}
 			if rc != nil && engine.MatchesIgnore(rc.Ignore, rc.Dir, full) {
+				excluded++
 				continue
 			}
 			kept = append(kept, base)
@@ -232,6 +235,19 @@ func Run(args []string, version string) int {
 	totalFiles := 0
 	for _, bases := range targets {
 		totalFiles += len(bases)
+	}
+
+	// An empty scope is more often a mistyped path than a clean tree; say so
+	// instead of reporting success over nothing.
+	if totalFiles == 0 {
+		if !cfg.Quiet {
+			if excluded > 0 {
+				fmt.Println(pal.Yellow(fmt.Sprintf("! no .tf files to process — %s excluded by ignore/exclude patterns", plural(excluded, "file", "files"))))
+			} else {
+				fmt.Println(pal.Yellow("! no .tf files found under " + displayPaths(paths)))
+			}
+		}
+		return 0
 	}
 
 	dirs := make([]string, 0, len(targets))
@@ -354,8 +370,11 @@ func report(outcomes []engine.DirOutcome, applyErrs [][]string, cfg engine.Confi
 		fmt.Fprintln(os.Stderr, pal.Red(fmt.Sprintf("✗ %s", plural(nErrs, "error", "errors"))))
 		return 2
 	case changedFiles > 0 && cfg.Check:
-		summary(pal.Yellow(fmt.Sprintf("✗ %s in %s need changes", plural(changedFiles, "file", "files"), plural(changedDirs, "directory", "directories"))) +
-			" " + pal.Dim("(run tforg to apply)"))
+		// changedFiles can exceed totalFiles (created files are not part of
+		// the checked scope), so report the two counts as separate facts.
+		summary(pal.Yellow(fmt.Sprintf("✗ %s need changes", plural(changedFiles, "file", "files"))) +
+			" " + pal.Dim(fmt.Sprintf("· checked %s in %s · run tforg to apply",
+			plural(totalFiles, "file", "files"), plural(len(outcomes), "directory", "directories"))))
 		return 1
 	case changedFiles > 0:
 		summary(pal.Green(fmt.Sprintf("✓ fixed %s in %s", plural(changedFiles, "file", "files"), plural(changedDirs, "directory", "directories"))) +
@@ -375,6 +394,15 @@ func plural(n int, one, many string) string {
 		return fmt.Sprintf("1 %s", one)
 	}
 	return fmt.Sprintf("%d %s", n, many)
+}
+
+// displayPaths keeps the "no files found" message readable when many paths
+// were given (e.g. a long -staged list).
+func displayPaths(paths []string) string {
+	if len(paths) <= 3 {
+		return strings.Join(paths, ", ")
+	}
+	return fmt.Sprintf("%s, … (%d paths)", strings.Join(paths[:3], ", "), len(paths))
 }
 
 func sortedKeys[V any](m map[string]V) []string {

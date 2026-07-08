@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/FutureFrenzy96/tforg/internal/engine"
@@ -109,6 +111,79 @@ func TestCollectTargetsSingleNestedFile(t *testing.T) {
 	want := map[string][]string{"modules/a/b/c": {"main.tf"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("single deep file: got %v, want %v", got, want)
+	}
+}
+
+// captureRun executes Run with stdout captured, returning output and exit code.
+func captureRun(t *testing.T, args []string) (string, int) {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	code := Run(args, "test")
+	w.Close()
+	os.Stdout = old
+	var buf strings.Builder
+	if _, err := io.Copy(&buf, r); err != nil {
+		t.Fatal(err)
+	}
+	return buf.String(), code
+}
+
+func TestRunWarnsWhenNoTfFilesFound(t *testing.T) {
+	empty := t.TempDir()
+	out, code := captureRun(t, []string{empty})
+	if code != 0 {
+		t.Fatalf("empty scope should exit 0, got %d\n%s", code, out)
+	}
+	if !strings.Contains(out, "no .tf files found under "+empty) {
+		t.Errorf("expected scope warning, got:\n%s", out)
+	}
+}
+
+func TestRunWarnsWhenEverythingExcluded(t *testing.T) {
+	dir := t.TempDir()
+	mkTree(t, dir, "gen/a.tf", "gen/b.tf")
+	out, code := captureRun(t, []string{"-exclude", "gen", dir})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d\n%s", code, out)
+	}
+	if !strings.Contains(out, "2 files excluded by ignore/exclude patterns") {
+		t.Errorf("expected exclusion warning, got:\n%s", out)
+	}
+}
+
+func TestCheckSummaryShowsCheckedFileCount(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "dirty.tf"), []byte("variable \"a\" {\ntype=string\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "clean.tf"), []byte("locals {\n  a = 1\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, code := captureRun(t, []string{"-check", "-no-config", dir})
+	if code != 1 {
+		t.Fatalf("expected exit 1, got %d\n%s", code, out)
+	}
+	if !strings.Contains(out, "checked 2 files in 1 directory") {
+		t.Errorf("check summary should state the scanned scope, got:\n%s", out)
+	}
+
+	// Clean tree: the count is in the nothing-to-do line.
+	cleanDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cleanDir, "locals.tf"), []byte("locals {\n  a = 1\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, code = captureRun(t, []string{"-check", "-no-config", cleanDir})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d\n%s", code, out)
+	}
+	if !strings.Contains(out, "1 file clean") {
+		t.Errorf("clean summary should state the file count, got:\n%s", out)
 	}
 }
 
