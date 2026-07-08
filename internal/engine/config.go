@@ -1,4 +1,4 @@
-package main
+package engine
 
 import (
 	"errors"
@@ -14,31 +14,33 @@ import (
 	"github.com/zclconf/go-cty/cty"
 )
 
-const configFileName = ".tforg.hcl"
+// ConfigFileName is the per-repo configuration file discovered upward from
+// each target directory.
+const ConfigFileName = ".tforg.hcl"
 
-// placeRule pins blocks matching a type and name to a destination file (or to
-// wherever they currently live, with keep). Rules run before the type mapping;
-// first match wins.
-type placeRule struct {
-	blockType string
-	pattern   string // matched against the block's labels joined with "."
-	file      string
-	keep      bool
+// PlaceRule pins blocks matching a type and name to a destination file (or to
+// wherever they currently live, with Keep). Rules run before the type
+// mapping; first match wins.
+type PlaceRule struct {
+	BlockType string
+	Pattern   string // matched against the block's labels joined with "."
+	File      string
+	Keep      bool
 }
 
-// repoConfig is the parsed content of a .tforg.hcl file.
-type repoConfig struct {
-	dir    string            // directory the file was found in; ignore patterns are relative to it
-	dest   map[string]string // overrides of the built-in type mapping
-	rules  []placeRule
-	ignore []string
+// RepoConfig is the parsed content of a .tforg.hcl file.
+type RepoConfig struct {
+	Dir    string   // directory the file was found in; Ignore patterns are relative to it
+	Ignore []string // gitignore-style globs for files tforg must never touch
+	dest   map[string]string
+	rules  []PlaceRule
 }
 
-// matchesIgnore reports whether file matches any ignore pattern. Patterns
+// MatchesIgnore reports whether file matches any ignore pattern. Patterns
 // with a slash match the path relative to baseDir (doublestar globs, so
 // **/generated/** works); bare patterns match any single path component,
 // like .gitignore.
-func matchesIgnore(patterns []string, baseDir, file string) bool {
+func MatchesIgnore(patterns []string, baseDir, file string) bool {
 	if len(patterns) == 0 {
 		return false
 	}
@@ -66,69 +68,71 @@ func matchesIgnore(patterns []string, baseDir, file string) bool {
 
 // destFor resolves where a block belongs: place rules first (first match
 // wins), then the type mapping. keep=true means "leave it where it is".
-func (c config) destFor(blk *hclsyntax.Block) (dest string, keep bool) {
-	if len(c.rules) > 0 {
+func (c Config) destFor(blk *hclsyntax.Block) (dest string, keep bool) {
+	if len(c.Rules) > 0 {
 		key := strings.Join(blk.Labels, ".")
-		for _, r := range c.rules {
-			if r.blockType != blk.Type {
+		for _, r := range c.Rules {
+			if r.BlockType != blk.Type {
 				continue
 			}
-			if ok, err := path.Match(r.pattern, key); err == nil && ok {
-				return r.file, r.keep
+			if ok, err := path.Match(r.Pattern, key); err == nil && ok {
+				return r.File, r.Keep
 			}
 		}
 	}
-	return c.dest[blk.Type], false
+	return c.Dest[blk.Type], false
 }
 
-// effectiveConfig layers destinations and rules for one directory:
+// EffectiveConfig layers destinations and rules for one directory:
 // built-in defaults < .tforg.hcl < -map flags.
-func effectiveConfig(base config, rc *repoConfig, cliDest map[string]string, cliRules []placeRule) config {
+func EffectiveConfig(base Config, rc *RepoConfig, cliDest map[string]string, cliRules []PlaceRule) Config {
 	out := base
-	out.dest = map[string]string{}
+	out.Dest = map[string]string{}
 	for k, v := range defaultDest {
-		out.dest[k] = v
+		out.Dest[k] = v
 	}
 	if rc != nil {
 		for k, v := range rc.dest {
-			out.dest[k] = v
+			out.Dest[k] = v
 		}
 	}
 	for k, v := range cliDest {
-		out.dest[k] = v
+		out.Dest[k] = v
 	}
-	out.rules = append(append([]placeRule{}, cliRules...), rulesOf(rc)...)
+	out.Rules = append(append([]PlaceRule{}, cliRules...), rulesOf(rc)...)
 	return out
 }
 
-func rulesOf(rc *repoConfig) []placeRule {
+func rulesOf(rc *RepoConfig) []PlaceRule {
 	if rc == nil {
 		return nil
 	}
 	return rc.rules
 }
 
-func validDestName(v string) error {
+// ValidDestName checks a mapping/rule destination: a bare .tf file name.
+func ValidDestName(v string) error {
 	if !strings.HasSuffix(v, ".tf") || strings.ContainsAny(v, "/\\") {
 		return fmt.Errorf("destination must be a bare .tf file name, got %q", v)
 	}
 	return nil
 }
 
-func validPattern(p string) error {
+// ValidPattern checks a place-rule name pattern.
+func ValidPattern(p string) error {
 	if _, err := path.Match(p, ""); err != nil {
 		return fmt.Errorf("bad pattern %q: %v", p, err)
 	}
 	return nil
 }
 
-func parseRepoConfig(src []byte, filename string) (*repoConfig, error) {
+func parseRepoConfig(src []byte, filename string) (*RepoConfig, error) {
 	f, diags := hclsyntax.ParseConfig(src, filename, hcl.InitialPos)
 	if diags.HasErrors() {
 		return nil, errors.New(diags.Error())
 	}
 	body := f.Body.(*hclsyntax.Body)
-	rc := &repoConfig{dest: map[string]string{}}
+	rc := &RepoConfig{dest: map[string]string{}}
 
 	for name, attr := range body.Attributes {
 		if name != "ignore" {
@@ -147,7 +151,7 @@ func parseRepoConfig(src []byte, filename string) (*repoConfig, error) {
 			if !doublestar.ValidatePattern(pat) {
 				return nil, fmt.Errorf("%s: bad ignore pattern %q", filename, pat)
 			}
-			rc.ignore = append(rc.ignore, pat)
+			rc.Ignore = append(rc.Ignore, pat)
 		}
 	}
 	for _, blk := range body.Blocks {
@@ -161,7 +165,7 @@ func parseRepoConfig(src []byte, filename string) (*repoConfig, error) {
 				if vdiags.HasErrors() || v.Type() != cty.String {
 					return nil, fmt.Errorf("%s: map.%s must be a quoted file name", filename, name)
 				}
-				if err := validDestName(v.AsString()); err != nil {
+				if err := ValidDestName(v.AsString()); err != nil {
 					return nil, fmt.Errorf("%s: map.%s: %v", filename, name, err)
 				}
 				rc.dest[name] = v.AsString()
@@ -170,35 +174,35 @@ func parseRepoConfig(src []byte, filename string) (*repoConfig, error) {
 			if len(blk.Labels) != 2 {
 				return nil, fmt.Errorf(`%s: place needs two labels: place "TYPE" "NAME" { ... }`, filename)
 			}
-			rule := placeRule{blockType: blk.Labels[0], pattern: blk.Labels[1]}
-			if err := validPattern(rule.pattern); err != nil {
+			rule := PlaceRule{BlockType: blk.Labels[0], Pattern: blk.Labels[1]}
+			if err := ValidPattern(rule.Pattern); err != nil {
 				return nil, fmt.Errorf("%s: %v", filename, err)
 			}
 			if len(blk.Body.Blocks) != 0 {
-				return nil, fmt.Errorf("%s: place %q %q: no nested blocks allowed", filename, rule.blockType, rule.pattern)
+				return nil, fmt.Errorf("%s: place %q %q: no nested blocks allowed", filename, rule.BlockType, rule.Pattern)
 			}
 			for name, attr := range blk.Body.Attributes {
 				v, vdiags := attr.Expr.Value(nil)
 				switch name {
 				case "file":
 					if vdiags.HasErrors() || v.Type() != cty.String {
-						return nil, fmt.Errorf("%s: place %q %q: file must be a quoted file name", filename, rule.blockType, rule.pattern)
+						return nil, fmt.Errorf("%s: place %q %q: file must be a quoted file name", filename, rule.BlockType, rule.Pattern)
 					}
-					if err := validDestName(v.AsString()); err != nil {
-						return nil, fmt.Errorf("%s: place %q %q: %v", filename, rule.blockType, rule.pattern, err)
+					if err := ValidDestName(v.AsString()); err != nil {
+						return nil, fmt.Errorf("%s: place %q %q: %v", filename, rule.BlockType, rule.Pattern, err)
 					}
-					rule.file = v.AsString()
+					rule.File = v.AsString()
 				case "keep":
 					if vdiags.HasErrors() || v.Type() != cty.Bool {
-						return nil, fmt.Errorf("%s: place %q %q: keep must be true or false", filename, rule.blockType, rule.pattern)
+						return nil, fmt.Errorf("%s: place %q %q: keep must be true or false", filename, rule.BlockType, rule.Pattern)
 					}
-					rule.keep = v.True()
+					rule.Keep = v.True()
 				default:
-					return nil, fmt.Errorf("%s: place %q %q: unknown attribute %q", filename, rule.blockType, rule.pattern, name)
+					return nil, fmt.Errorf("%s: place %q %q: unknown attribute %q", filename, rule.BlockType, rule.Pattern, name)
 				}
 			}
-			if rule.keep == (rule.file != "") {
-				return nil, fmt.Errorf("%s: place %q %q: set exactly one of file or keep", filename, rule.blockType, rule.pattern)
+			if rule.Keep == (rule.File != "") {
+				return nil, fmt.Errorf("%s: place %q %q: set exactly one of file or keep", filename, rule.BlockType, rule.Pattern)
 			}
 			rc.rules = append(rc.rules, rule)
 		default:
@@ -208,16 +212,16 @@ func parseRepoConfig(src []byte, filename string) (*repoConfig, error) {
 	return rc, nil
 }
 
-// configLoader finds the nearest .tforg.hcl for a directory, walking upward
+// ConfigLoader finds the nearest .tforg.hcl for a directory, walking upward
 // (like .gitignore discovery), with per-directory memoization.
-type configLoader struct {
+type ConfigLoader struct {
 	disabled bool
-	explicit *repoConfig
-	cache    map[string]*repoConfig
+	explicit *RepoConfig
+	cache    map[string]*RepoConfig
 }
 
-func newConfigLoader(disabled bool, explicitPath string) (*configLoader, error) {
-	l := &configLoader{disabled: disabled, cache: map[string]*repoConfig{}}
+func NewConfigLoader(disabled bool, explicitPath string) (*ConfigLoader, error) {
+	l := &ConfigLoader{disabled: disabled, cache: map[string]*RepoConfig{}}
 	if explicitPath != "" && !disabled {
 		b, err := os.ReadFile(explicitPath)
 		if err != nil {
@@ -228,14 +232,14 @@ func newConfigLoader(disabled bool, explicitPath string) (*configLoader, error) 
 			return nil, err
 		}
 		if abs, err := filepath.Abs(explicitPath); err == nil {
-			rc.dir = filepath.Dir(abs)
+			rc.Dir = filepath.Dir(abs)
 		}
 		l.explicit = rc
 	}
 	return l, nil
 }
 
-func (l *configLoader) forDir(dir string) (*repoConfig, error) {
+func (l *ConfigLoader) ForDir(dir string) (*RepoConfig, error) {
 	if l.disabled {
 		return nil, nil
 	}
@@ -245,17 +249,17 @@ func (l *configLoader) forDir(dir string) (*repoConfig, error) {
 	if rc, ok := l.cache[dir]; ok {
 		return rc, nil
 	}
-	var rc *repoConfig
-	cfgPath := filepath.Join(dir, configFileName)
+	var rc *RepoConfig
+	cfgPath := filepath.Join(dir, ConfigFileName)
 	if b, err := os.ReadFile(cfgPath); err == nil {
 		parsed, perr := parseRepoConfig(b, cfgPath)
 		if perr != nil {
 			return nil, perr
 		}
-		parsed.dir = dir
+		parsed.Dir = dir
 		rc = parsed
 	} else if parent := filepath.Dir(dir); parent != dir {
-		parentRC, perr := l.forDir(parent)
+		parentRC, perr := l.ForDir(parent)
 		if perr != nil {
 			return nil, perr
 		}

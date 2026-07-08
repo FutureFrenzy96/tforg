@@ -1,4 +1,7 @@
-package main
+// Package engine implements tforg's core: parsing Terraform files, moving
+// top-level blocks into their conventional files, duplicate detection, and
+// terraform-fmt-identical formatting via hclwrite.
+package engine
 
 import (
 	"bytes"
@@ -13,15 +16,16 @@ import (
 	"github.com/hashicorp/hcl/v2/hclwrite"
 )
 
-type config struct {
-	check   bool
-	quiet   bool
-	fmtOnly bool
-	sort    bool
-	diff    bool
-	staged  bool
-	dest    map[string]string
-	rules   []placeRule
+// Config carries the flags and placement configuration for one directory run.
+type Config struct {
+	Check   bool
+	Quiet   bool
+	FmtOnly bool
+	Sort    bool
+	Diff    bool
+	Staged  bool
+	Dest    map[string]string
+	Rules   []PlaceRule
 }
 
 // span is a half-open byte range [start, end) within a source file.
@@ -37,25 +41,25 @@ type moveText struct {
 	localKeys map[string]int // locals blocks only: key name -> line
 }
 
-// moveEvent records one block relocation for reporting.
-type moveEvent struct {
-	from, dest, desc string
+// MoveEvent records one block relocation for reporting.
+type MoveEvent struct {
+	From, Dest, Desc string
 }
 
-// dirOutcome is the computed result for one directory. Nothing is written to
-// disk until applyOutcome runs.
-type dirOutcome struct {
-	dir     string
-	writes  map[string][]byte // base name -> new file content
-	creates map[string]bool   // subset of writes that are new files
-	deletes map[string]bool   // files emptied by moves
-	origs   map[string][]byte // previous content of written/deleted files
-	moves   []moveEvent
-	fmtOnly []string // files changed by formatting alone
-	errs    []string
+// DirOutcome is the computed result for one directory. Nothing is written to
+// disk until Apply runs.
+type DirOutcome struct {
+	Dir     string
+	Writes  map[string][]byte // base name -> new file content
+	Creates map[string]bool   // subset of Writes that are new files
+	Deletes map[string]bool   // files emptied by moves
+	Origs   map[string][]byte // previous content of written/deleted files
+	Moves   []MoveEvent
+	FmtOnly []string // files changed by formatting alone
+	Errs    []string
 }
 
-// fileState is one targeted file's parsed form during processDir.
+// fileState is one targeted file's parsed form during ProcessDir.
 type fileState struct {
 	base       string
 	src        []byte
@@ -67,21 +71,21 @@ type fileState struct {
 	removals   []span
 }
 
-func (o *dirOutcome) changed() bool {
-	return len(o.writes) > 0 || len(o.deletes) > 0
+func (o *DirOutcome) Changed() bool {
+	return len(o.Writes) > 0 || len(o.Deletes) > 0
 }
 
-// processDir computes the reorganization and formatting of the targeted files
+// ProcessDir computes the reorganization and formatting of the targeted files
 // (base names, sorted) within a single directory. Blocks only ever move
 // between files in the same directory, since a Terraform module is a
 // directory.
-func processDir(dir string, bases []string, cfg config) dirOutcome {
-	out := dirOutcome{
-		dir:     dir,
-		writes:  map[string][]byte{},
-		creates: map[string]bool{},
-		deletes: map[string]bool{},
-		origs:   map[string][]byte{},
+func ProcessDir(dir string, bases []string, cfg Config) DirOutcome {
+	out := DirOutcome{
+		Dir:     dir,
+		Writes:  map[string][]byte{},
+		Creates: map[string]bool{},
+		Deletes: map[string]bool{},
+		Origs:   map[string][]byte{},
 	}
 
 	var states []*fileState
@@ -91,17 +95,17 @@ func processDir(dir string, bases []string, cfg config) dirOutcome {
 		path := filepath.Join(dir, base)
 		src, err := os.ReadFile(path)
 		if err != nil {
-			out.errs = append(out.errs, err.Error())
+			out.Errs = append(out.Errs, err.Error())
 			continue
 		}
-		st := &fileState{base: base, src: src, keepBlocks: cfg.fmtOnly || isOverride(base)}
+		st := &fileState{base: base, src: src, keepBlocks: cfg.FmtOnly || isOverride(base)}
 		states = append(states, st)
 		srcs[base] = src
 
 		f, diags := hclsyntax.ParseConfig(src, path, hcl.InitialPos)
 		if diags.HasErrors() {
 			for _, d := range diags.Errs() {
-				out.errs = append(out.errs, d.Error())
+				out.Errs = append(out.Errs, d.Error())
 			}
 			st.parseErr = true
 			continue
@@ -122,7 +126,7 @@ func processDir(dir string, bases []string, cfg config) dirOutcome {
 	abort := false
 	if dups := findDuplicates(states); len(dups) > 0 {
 		for _, d := range dups {
-			out.errs = append(out.errs, fmt.Sprintf("%s: %s", dir, d))
+			out.Errs = append(out.Errs, fmt.Sprintf("%s: %s", dir, d))
 		}
 		abort = true
 	}
@@ -150,7 +154,7 @@ func processDir(dir string, bases []string, cfg config) dirOutcome {
 					mt.localKeys = localKeyLines(blk)
 				}
 				appends[dest] = append(appends[dest], mt)
-				out.moves = append(out.moves, moveEvent{from: st.base, dest: dest, desc: blockDesc(blk)})
+				out.Moves = append(out.Moves, MoveEvent{From: st.base, Dest: dest, Desc: blockDesc(blk)})
 			}
 		}
 	}
@@ -162,11 +166,10 @@ func processDir(dir string, bases []string, cfg config) dirOutcome {
 	// half-reorganized.
 	destOnDisk := map[string][]byte{}
 	for dest, texts := range appends {
-		_ = texts
 		if _, ok := srcs[dest]; ok {
 			for _, st := range states {
 				if st.base == dest && st.parseErr {
-					out.errs = append(out.errs, fmt.Sprintf("%s: cannot move blocks into a file with syntax errors", filepath.Join(dir, dest)))
+					out.Errs = append(out.Errs, fmt.Sprintf("%s: cannot move blocks into a file with syntax errors", filepath.Join(dir, dest)))
 					abort = true
 				}
 			}
@@ -178,13 +181,13 @@ func processDir(dir string, bases []string, cfg config) dirOutcome {
 			continue
 		}
 		if err != nil {
-			out.errs = append(out.errs, err.Error())
+			out.Errs = append(out.Errs, err.Error())
 			abort = true
 			continue
 		}
 		f, diags := hclsyntax.ParseConfig(b, path, hcl.InitialPos)
 		if diags.HasErrors() {
-			out.errs = append(out.errs, fmt.Sprintf("%s: cannot move blocks into a file with syntax errors", path))
+			out.Errs = append(out.Errs, fmt.Sprintf("%s: cannot move blocks into a file with syntax errors", path))
 			abort = true
 			continue
 		}
@@ -202,12 +205,12 @@ func processDir(dir string, bases []string, cfg config) dirOutcome {
 		}
 		for _, t := range texts {
 			if line, ok := existing[t.desc]; ok {
-				out.errs = append(out.errs, fmt.Sprintf("%s: duplicate %s (%s:%d, %s:%d)", dir, t.desc, t.from, t.line, dest, line))
+				out.Errs = append(out.Errs, fmt.Sprintf("%s: duplicate %s (%s:%d, %s:%d)", dir, t.desc, t.from, t.line, dest, line))
 				abort = true
 			}
 			for _, name := range sortedKeys(t.localKeys) {
 				if line, ok := existingLocals[name]; ok {
-					out.errs = append(out.errs, fmt.Sprintf("%s: duplicate local %q (%s:%d, %s:%d)", dir, name, t.from, t.localKeys[name], dest, line))
+					out.Errs = append(out.Errs, fmt.Sprintf("%s: duplicate local %q (%s:%d, %s:%d)", dir, name, t.from, t.localKeys[name], dest, line))
 					abort = true
 				}
 			}
@@ -216,7 +219,7 @@ func processDir(dir string, bases []string, cfg config) dirOutcome {
 	}
 	if abort {
 		appends = nil
-		out.moves = nil
+		out.Moves = nil
 		for _, st := range states {
 			st.removals = nil
 		}
@@ -243,7 +246,7 @@ func processDir(dir string, bases []string, cfg config) dirOutcome {
 		final[dest] = appendTexts(base, texts)
 	}
 
-	if cfg.sort && !cfg.fmtOnly {
+	if cfg.Sort && !cfg.FmtOnly {
 		keep := map[string]bool{}
 		for _, st := range states {
 			keep[st.base] = st.keepBlocks
@@ -271,24 +274,24 @@ func processDir(dir string, bases []string, cfg config) dirOutcome {
 			}
 		}
 		if existed && len(bytes.TrimSpace(content)) == 0 {
-			out.deletes[base] = true
-			out.origs[base] = orig
+			out.Deletes[base] = true
+			out.Origs[base] = orig
 			continue
 		}
 		formatted := hclwrite.Format(content)
 		switch {
 		case !existed:
-			out.writes[base] = formatted
-			out.creates[base] = true
+			out.Writes[base] = formatted
+			out.Creates[base] = true
 		case !bytes.Equal(formatted, orig):
-			out.writes[base] = formatted
-			out.origs[base] = orig
+			out.Writes[base] = formatted
+			out.Origs[base] = orig
 			if len(appends[base]) == 0 && !removedFrom[base] {
-				out.fmtOnly = append(out.fmtOnly, base)
+				out.FmtOnly = append(out.FmtOnly, base)
 			}
 		}
 	}
-	sort.Strings(out.fmtOnly)
+	sort.Strings(out.FmtOnly)
 	return out
 }
 
@@ -416,13 +419,12 @@ func outsideSpans(src []byte, spans []span) []byte {
 	return append(out, src[prev:]...)
 }
 
-// applyOutcome writes the computed changes to disk. Writes are atomic
-// (temp file + rename) so an interrupted run can never leave a truncated
-// .tf file behind.
-func applyOutcome(o dirOutcome) []string {
+// Apply writes the computed changes to disk. Writes are atomic (temp file +
+// rename) so an interrupted run can never leave a truncated .tf file behind.
+func Apply(o DirOutcome) []string {
 	var errs []string
-	for base, content := range o.writes {
-		path := filepath.Join(o.dir, base)
+	for base, content := range o.Writes {
+		path := filepath.Join(o.Dir, base)
 		perm := os.FileMode(0o644)
 		if fi, err := os.Stat(path); err == nil {
 			perm = fi.Mode().Perm()
@@ -431,8 +433,8 @@ func applyOutcome(o dirOutcome) []string {
 			errs = append(errs, err.Error())
 		}
 	}
-	for base := range o.deletes {
-		if err := os.Remove(filepath.Join(o.dir, base)); err != nil {
+	for base := range o.Deletes {
+		if err := os.Remove(filepath.Join(o.Dir, base)); err != nil {
 			errs = append(errs, err.Error())
 		}
 	}
@@ -594,4 +596,13 @@ func blockDesc(blk *hclsyntax.Block) string {
 func isOverride(base string) bool {
 	n := strings.ToLower(base)
 	return n == "override.tf" || strings.HasSuffix(n, "_override.tf")
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

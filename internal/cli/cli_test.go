@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"os"
@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"sort"
 	"testing"
+
+	"github.com/FutureFrenzy96/tforg/internal/engine"
 )
 
 func mkTree(t *testing.T, root string, files ...string) {
@@ -107,5 +109,26 @@ func TestCollectTargetsSingleNestedFile(t *testing.T) {
 	want := map[string][]string{"modules/a/b/c": {"main.tf"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("single deep file: got %v, want %v", got, want)
+	}
+}
+
+func TestMapFlagPatternSyntax(t *testing.T) {
+	dest := map[string]string{}
+	var rules []engine.PlaceRule
+	m := &mapFlag{dest: dest, rules: &rules}
+
+	if err := m.Set("terraform=terraform.tf,module:network_data=data.tf"); err != nil {
+		t.Fatal(err)
+	}
+	if dest["terraform"] != "terraform.tf" {
+		t.Errorf("plain override lost: %v", dest)
+	}
+	if len(rules) != 1 || rules[0].Pattern != "network_data" || rules[0].File != "data.tf" {
+		t.Errorf("pattern rule wrong: %+v", rules)
+	}
+	for _, bad := range []string{"module:=x.tf", ":m=x.tf", "module:m=dir/x.tf", "nope"} {
+		if err := m.Set(bad); err == nil {
+			t.Errorf("expected error for %q", bad)
+		}
 	}
 }

@@ -1,4 +1,4 @@
-package main
+package ui
 
 import (
 	"fmt"
@@ -24,19 +24,20 @@ func unifiedDiffLines(relPath string, a, b []byte) []string {
 	return strings.Split(strings.TrimRight(text, "\n"), "\n")
 }
 
-func printDiff(pal palette, relPath string, a, b []byte) {
+// PrintDiff writes a colorized unified diff to stdout.
+func PrintDiff(pal Palette, relPath string, a, b []byte) {
 	for _, line := range unifiedDiffLines(relPath, a, b) {
 		switch {
 		case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
-			fmt.Println(pal.bold(line))
+			fmt.Println(pal.Bold(line))
 		case strings.HasPrefix(line, "@@"):
-			fmt.Println(pal.paint("36", line))
+			fmt.Println(pal.Paint("36", line))
 		case strings.HasPrefix(line, "+"):
-			fmt.Println(pal.green(line))
+			fmt.Println(pal.Green(line))
 		case strings.HasPrefix(line, "-"):
-			fmt.Println(pal.red(line))
+			fmt.Println(pal.Red(line))
 		default:
-			fmt.Println(pal.dim(line))
+			fmt.Println(pal.Dim(line))
 		}
 	}
 }

@@ -1,4 +1,6 @@
-package main
+// Package ui renders tforg's terminal output: the color palette and
+// unified diffs.
+package ui
 
 import (
 	"os"
@@ -27,35 +29,35 @@ var fileColorCodes = map[string]string{
 // derived from the name so the same file is painted consistently everywhere.
 var otherFileCodes = []string{"32", "33", "34", "35", "36", "94", "95", "96"}
 
-type palette struct{ on bool }
+type Palette struct{ on bool }
 
-// newPalette decides whether to emit color: an explicit flag or the NO_COLOR
+// NewPalette decides whether to emit color: an explicit flag or the NO_COLOR
 // convention wins, CLICOLOR_FORCE overrides the TTY check (useful when a hook
 // runner captures output), otherwise color only when stdout is a terminal.
-func newPalette(disable bool) palette {
+func NewPalette(disable bool) Palette {
 	if disable || os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
-		return palette{}
+		return Palette{}
 	}
 	if f := os.Getenv("CLICOLOR_FORCE"); f != "" && f != "0" {
-		return palette{on: true}
+		return Palette{on: true}
 	}
 	fi, err := os.Stdout.Stat()
-	return palette{on: err == nil && fi.Mode()&os.ModeCharDevice != 0}
+	return Palette{on: err == nil && fi.Mode()&os.ModeCharDevice != 0}
 }
 
-func (p palette) paint(code, s string) string {
+func (p Palette) Paint(code, s string) string {
 	if !p.on || code == "" {
 		return s
 	}
 	return "\x1b[" + code + "m" + s + "\x1b[0m"
 }
 
-func (p palette) file(name string) string { return p.paint(fileColorCode(name), name) }
-func (p palette) bold(s string) string    { return p.paint("1", s) }
-func (p palette) dim(s string) string     { return p.paint("2", s) }
-func (p palette) red(s string) string     { return p.paint("31", s) }
-func (p palette) green(s string) string   { return p.paint("32", s) }
-func (p palette) yellow(s string) string  { return p.paint("33", s) }
+func (p Palette) File(name string) string { return p.Paint(fileColorCode(name), name) }
+func (p Palette) Bold(s string) string    { return p.Paint("1", s) }
+func (p Palette) Dim(s string) string     { return p.Paint("2", s) }
+func (p Palette) Red(s string) string     { return p.Paint("31", s) }
+func (p Palette) Green(s string) string   { return p.Paint("32", s) }
+func (p Palette) Yellow(s string) string  { return p.Paint("33", s) }
 
 func fileColorCode(name string) string {
 	if c, ok := fileColorCodes[strings.ToLower(name)]; ok {

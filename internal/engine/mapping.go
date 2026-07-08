@@ -1,4 +1,4 @@
-package main
+package engine
 
 // defaultDest maps each top-level Terraform block type to the file it
 // belongs in. Block types not listed here are left where they are.

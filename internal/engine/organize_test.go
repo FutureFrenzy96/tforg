@@ -1,4 +1,4 @@
-package main
+package engine
 
 import (
 	"os"
@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func defaultCfg() config { return config{dest: defaultDest} }
+func defaultCfg() Config { return Config{Dest: defaultDest} }
 
 func writeFiles(t *testing.T, dir string, files map[string]string) {
 	t.Helper()
@@ -39,9 +39,9 @@ func readFiles(t *testing.T, dir string) map[string]string {
 	return out
 }
 
-// organize runs processDir over the given targets (all .tf files when nil)
-// and applies the result, mirroring what main does.
-func organize(t *testing.T, dir string, targets []string, cfg config) dirOutcome {
+// organize runs ProcessDir over the given targets (all .tf files when nil)
+// and applies the result, mirroring what the CLI does.
+func organize(t *testing.T, dir string, targets []string, cfg Config) DirOutcome {
 	t.Helper()
 	if targets == nil {
 		for name := range readFiles(t, dir) {
@@ -49,9 +49,9 @@ func organize(t *testing.T, dir string, targets []string, cfg config) dirOutcome
 		}
 		sort.Strings(targets)
 	}
-	o := processDir(dir, targets, cfg)
-	if len(o.errs) == 0 {
-		if errs := applyOutcome(o); len(errs) > 0 {
+	o := ProcessDir(dir, targets, cfg)
+	if len(o.Errs) == 0 {
+		if errs := Apply(o); len(errs) > 0 {
 			t.Fatalf("apply failed: %v", errs)
 		}
 	}
@@ -208,8 +208,8 @@ output "o" {
 
 	organize(t, dir, nil, defaultCfg())
 	second := organize(t, dir, nil, defaultCfg())
-	if second.changed() {
-		t.Errorf("second run not a no-op: writes=%v deletes=%v", second.writes, second.deletes)
+	if second.Changed() {
+		t.Errorf("second run not a no-op: writes=%v deletes=%v", second.Writes, second.Deletes)
 	}
 }
 
@@ -225,8 +225,8 @@ func TestOverrideFilesAreNotReorganized(t *testing.T) {
 	})
 
 	o := organize(t, dir, nil, defaultCfg())
-	if len(o.moves) != 0 {
-		t.Errorf("blocks moved out of override files: %v", o.moves)
+	if len(o.Moves) != 0 {
+		t.Errorf("blocks moved out of override files: %v", o.Moves)
 	}
 	got := readFiles(t, dir)
 	if got["override.tf"] != content || got["prod_override.tf"] != content {
@@ -242,8 +242,8 @@ func TestEmptiedSourceIsDeleted(t *testing.T) {
 `})
 
 	o := organize(t, dir, nil, defaultCfg())
-	if !o.deletes["misc.tf"] {
-		t.Errorf("expected misc.tf to be deleted; deletes=%v", o.deletes)
+	if !o.Deletes["misc.tf"] {
+		t.Errorf("expected misc.tf to be deleted; deletes=%v", o.Deletes)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "misc.tf")); !os.IsNotExist(err) {
 		t.Error("misc.tf still exists")
@@ -284,8 +284,8 @@ func TestFormatsLikeTerraformFmt(t *testing.T) {
 	if !strings.Contains(got["main.tf"], "  count    = 1") {
 		t.Errorf("not formatted:\n%s", got["main.tf"])
 	}
-	if len(o.fmtOnly) != 1 || o.fmtOnly[0] != "main.tf" {
-		t.Errorf("expected fmtOnly=[main.tf], got %v", o.fmtOnly)
+	if len(o.FmtOnly) != 1 || o.FmtOnly[0] != "main.tf" {
+		t.Errorf("expected FmtOnly=[main.tf], got %v", o.FmtOnly)
 	}
 }
 
@@ -295,7 +295,7 @@ func TestParseErrorLeavesFileUntouched(t *testing.T) {
 	writeFiles(t, dir, map[string]string{"main.tf": broken})
 
 	o := organize(t, dir, nil, defaultCfg())
-	if len(o.errs) == 0 {
+	if len(o.Errs) == 0 {
 		t.Fatal("expected parse errors")
 	}
 	got := readFiles(t, dir)
@@ -353,11 +353,11 @@ resource "null_resource" "r" {
 `})
 
 	cfg := defaultCfg()
-	cfg.dest = map[string]string{}
+	cfg.Dest = map[string]string{}
 	for k, v := range defaultDest {
-		cfg.dest[k] = v
+		cfg.Dest[k] = v
 	}
-	cfg.dest["terraform"] = "terraform.tf"
+	cfg.Dest["terraform"] = "terraform.tf"
 
 	organize(t, dir, nil, cfg)
 	got := readFiles(t, dir)
@@ -371,10 +371,10 @@ func TestFmtOnlyMode(t *testing.T) {
 	writeFiles(t, dir, map[string]string{"main.tf": "variable \"v\" {\ntype=string\n}\n"})
 
 	cfg := defaultCfg()
-	cfg.fmtOnly = true
+	cfg.FmtOnly = true
 	o := organize(t, dir, nil, cfg)
-	if len(o.moves) != 0 {
-		t.Errorf("fmt-only mode moved blocks: %v", o.moves)
+	if len(o.Moves) != 0 {
+		t.Errorf("fmt-only mode moved blocks: %v", o.Moves)
 	}
 	got := readFiles(t, dir)
 	if !strings.Contains(got["main.tf"], "type = string") {
@@ -388,9 +388,9 @@ func TestCheckModeWritesNothing(t *testing.T) {
 	writeFiles(t, dir, map[string]string{"main.tf": orig})
 
 	cfg := defaultCfg()
-	cfg.check = true
-	o := processDir(dir, []string{"main.tf"}, cfg) // no apply, as in main
-	if !o.changed() {
+	cfg.Check = true
+	o := ProcessDir(dir, []string{"main.tf"}, cfg) // no apply, as in the CLI
+	if !o.Changed() {
 		t.Error("check mode should report pending changes")
 	}
 	got := readFiles(t, dir)

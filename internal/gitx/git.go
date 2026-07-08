@@ -1,4 +1,6 @@
-package main
+// Package gitx holds tforg's git integration: staged-file discovery and the
+// pre-commit hook installer.
+package gitx
 
 import (
 	"bytes"
@@ -23,9 +25,9 @@ func gitOutput(args ...string) (string, error) {
 	return strings.TrimRight(string(out), "\r\n"), nil
 }
 
-// stagedTfFiles returns absolute paths of the .tf files currently staged for
+// StagedTfFiles returns absolute paths of the .tf files currently staged for
 // commit (added, copied, modified, or renamed).
-func stagedTfFiles() ([]string, []string) {
+func StagedTfFiles() ([]string, []string) {
 	root, err := gitOutput("rev-parse", "--show-toplevel")
 	if err != nil {
 		return nil, []string{"-staged requires a git repository: " + err.Error()}

@@ -1,9 +1,11 @@
-package main
+package gitx
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/FutureFrenzy96/tforg/internal/ui"
 )
 
 // hookScript embeds the absolute path of the installing binary: GUI git
@@ -36,9 +38,9 @@ exec "$TFORG" -staged
 `
 }
 
-// installHook writes a pre-commit hook into the repository containing the
+// InstallHook writes a pre-commit hook into the repository containing the
 // current directory, honoring core.hooksPath.
-func installHook(args []string) int {
+func InstallHook(args []string) int {
 	force := false
 	for _, a := range args {
 		if a == "-force" || a == "--force" {
@@ -48,26 +50,26 @@ func installHook(args []string) int {
 		fmt.Fprintf(os.Stderr, "install-hook: unknown argument %q\n", a)
 		return 2
 	}
-	pal := newPalette(false)
+	pal := ui.NewPalette(false)
 
 	hooksDir, err := gitOutput("rev-parse", "--git-path", "hooks")
 	if err != nil {
-		fmt.Fprintln(os.Stderr, pal.red("✗"), "install-hook requires a git repository:", err)
+		fmt.Fprintln(os.Stderr, pal.Red("✗"), "install-hook requires a git repository:", err)
 		return 2
 	}
 	path := filepath.Join(hooksDir, "pre-commit")
 	if _, err := os.Stat(path); err == nil && !force {
-		fmt.Fprintln(os.Stderr, pal.red("✗"), path, "already exists (use `tforg install-hook -force` to overwrite)")
+		fmt.Fprintln(os.Stderr, pal.Red("✗"), path, "already exists (use `tforg install-hook -force` to overwrite)")
 		return 2
 	}
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
-		fmt.Fprintln(os.Stderr, pal.red("✗"), err)
+		fmt.Fprintln(os.Stderr, pal.Red("✗"), err)
 		return 2
 	}
 	if err := os.WriteFile(path, []byte(hookScript()), 0o755); err != nil {
-		fmt.Fprintln(os.Stderr, pal.red("✗"), err)
+		fmt.Fprintln(os.Stderr, pal.Red("✗"), err)
 		return 2
 	}
-	fmt.Println(pal.green("✓"), "installed", path)
+	fmt.Println(pal.Green("✓"), "installed", path)
 	return 0
 }
