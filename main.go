@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/bmatcuk/doublestar/v4"
 )
 
 const usageText = `tforg — fast Terraform formatter + file organizer
@@ -43,6 +45,8 @@ Flags:
   -map type=file   override a type's destination, or pin one block with
                    type:name=file (repeatable, comma-separated), e.g.
                    -map terraform=terraform.tf,module:network_data=data.tf
+  -exclude glob    skip matching files, e.g. -exclude '**/generated/**'
+                   (repeatable, comma-separated; relative to the working dir)
   -config path     use this config file instead of discovering .tforg.hcl
   -no-config       ignore .tforg.hcl files
   -no-color        disable colored output (NO_COLOR and CLICOLOR_FORCE are
@@ -56,12 +60,31 @@ Config:
     place "module" "network_data" { file = "data.tf" }   # pin to a file
     place "module" "legacy" { keep = true }              # leave where it is
     map { terraform = "terraform.tf" }                   # change type defaults
+    ignore = ["**/generated/**", "*.gen.tf"]             # never touch these
 
 Exit codes: 0 nothing to do · 1 changes made (or needed with -check) · 2 error
 `
 
 func main() {
 	os.Exit(run(os.Args[1:]))
+}
+
+type excludeFlag struct{ vals *[]string }
+
+func (e *excludeFlag) String() string { return "" }
+
+func (e *excludeFlag) Set(v string) error {
+	for _, p := range strings.Split(v, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if !doublestar.ValidatePattern(p) {
+			return fmt.Errorf("bad exclude pattern %q", p)
+		}
+		*e.vals = append(*e.vals, p)
+	}
+	return nil
 }
 
 type mapFlag struct {
@@ -104,6 +127,7 @@ func run(args []string) int {
 	cfg := config{}
 	cliDest := map[string]string{}
 	var cliRules []placeRule
+	var cliExcludes []string
 
 	fl := flag.NewFlagSet("tforg", flag.ContinueOnError)
 	fl.Usage = func() { fmt.Fprint(os.Stderr, usageText) }
@@ -118,6 +142,7 @@ func run(args []string) int {
 	fl.BoolVar(&cfg.quiet, "quiet", false, "")
 	fl.BoolVar(&cfg.fmtOnly, "fmt-only", false, "")
 	fl.Var(&mapFlag{dest: cliDest, rules: &cliRules}, "map", "")
+	fl.Var(&excludeFlag{vals: &cliExcludes}, "exclude", "")
 	if err := fl.Parse(args); err != nil {
 		return 2
 	}
@@ -163,6 +188,43 @@ func run(args []string) int {
 	if len(errs) > 0 {
 		return 2
 	}
+
+	// Resolve each directory's .tforg.hcl (nearest ancestor wins) serially,
+	// so the parallel workers below only read their own config value.
+	loader, err := newConfigLoader(*noConfig, *configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, pal.red("✗"), err)
+		return 2
+	}
+
+	// Drop files matched by -exclude patterns (relative to the working
+	// directory) or by the nearest config's ignore list (relative to the
+	// config file) — generated Terraform must never be rewritten.
+	cwd, _ := os.Getwd()
+	for dir, bases := range targets {
+		rc, err := loader.forDir(dir)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, pal.red("✗"), err)
+			return 2
+		}
+		var kept []string
+		for _, base := range bases {
+			full := filepath.Join(dir, base)
+			if matchesIgnore(cliExcludes, cwd, full) {
+				continue
+			}
+			if rc != nil && matchesIgnore(rc.ignore, rc.dir, full) {
+				continue
+			}
+			kept = append(kept, base)
+		}
+		if len(kept) == 0 {
+			delete(targets, dir)
+		} else {
+			targets[dir] = kept
+		}
+	}
+
 	totalFiles := 0
 	for _, bases := range targets {
 		totalFiles += len(bases)
@@ -174,13 +236,6 @@ func run(args []string) int {
 	}
 	sort.Strings(dirs)
 
-	// Resolve each directory's .tforg.hcl (nearest ancestor wins) serially,
-	// so the parallel workers below only read their own config value.
-	loader, err := newConfigLoader(*noConfig, *configPath)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, pal.red("✗"), err)
-		return 2
-	}
 	dirCfgs := make([]config, len(dirs))
 	for i, dir := range dirs {
 		rc, err := loader.forDir(dir)

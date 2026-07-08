@@ -70,6 +70,7 @@ tforg -diff .            # unified diff of pending changes (implies -check)
 tforg -sort .            # also alphabetize variable/output blocks
 tforg -fmt-only .        # formatting only, no block moves
 tforg -quiet .           # errors only
+tforg -exclude '**/generated/**' .   # skip matching files (or `ignore` in .tforg.hcl)
 tforg -no-color .        # plain output (NO_COLOR / CLICOLOR_FORCE also honored)
 tforg -map terraform=terraform.tf,module=modules.tf .   # override destinations
 tforg -version           # print version
@@ -125,7 +126,14 @@ place "module" "legacy" {
 map {
   terraform = "terraform.tf"   # change a type's default destination
 }
+
+ignore = ["**/generated/**", "*.gen.tf"]   # never touch generated Terraform
 ```
+
+`ignore` patterns are gitignore-style globs, relative to the `.tforg.hcl`
+location; bare patterns (no `/`) match any path component or file name.
+Matched files are neither reorganized nor formatted. The `-exclude` flag is
+the CLI equivalent (relative to the working directory).
 
 The nearest `.tforg.hcl` — in the target directory or any parent — applies,
 so one file at the repo root covers every nested module. `-config path`
@@ -166,11 +174,12 @@ repos:
 ## Behavior details
 
 - **Duplicate detection**: two blocks with the same address in one module
-  (`variable "region"` defined twice, identical resource addresses, ...) are
-  reported as errors (exit `2`) and nothing is moved — catching at commit time
-  what Terraform would only surface at plan time. Provider aliases, repeated
-  `terraform`/`locals` blocks, and override files are exempt, as Terraform
-  allows those.
+  (`variable "region"` defined twice, identical resource addresses, ...) and
+  the same key defined in two `locals` blocks are reported as errors with
+  `file:line` locations (exit `2`) and nothing is moved — catching at commit
+  time what Terraform would only surface at plan time. Provider aliases,
+  repeated `terraform`/`locals` blocks themselves, and override files are
+  exempt, as Terraform allows those.
 - **Sorting** (`-sort`, opt-in): variable and output blocks are alphabetized
   within their files. A file is skipped when reordering would be unsafe (mixed
   block types, or standalone comments between blocks). Resources are never
@@ -189,3 +198,7 @@ repos:
   no blocks are moved into an unparseable destination.
 - **`.tf.json`**, `.terraform/`, `.git/`, and hidden directories are skipped.
 - **Idempotent**: running twice always yields "nothing to do".
+
+## License
+
+[MIT](LICENSE)

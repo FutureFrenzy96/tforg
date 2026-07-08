@@ -30,9 +30,11 @@ type span struct{ start, end int }
 // moveText is a block (with its attached leading comments) extracted from a
 // source file, destined for another file in the same directory.
 type moveText struct {
-	text []byte
-	from string
-	desc string
+	text      []byte
+	from      string
+	desc      string
+	line      int
+	localKeys map[string]int // locals blocks only: key name -> line
 }
 
 // moveEvent records one block relocation for reporting.
@@ -138,11 +140,16 @@ func processDir(dir string, bases []string, cfg config) dirOutcome {
 				}
 				sp := blockSpan(st.src, blk, st.lineStarts, st.flags)
 				st.removals = append(st.removals, sp)
-				appends[dest] = append(appends[dest], moveText{
+				mt := moveText{
 					text: st.src[sp.start:sp.end],
 					from: st.base,
 					desc: blockDesc(blk),
-				})
+					line: blk.TypeRange.Start.Line,
+				}
+				if blk.Type == "locals" {
+					mt.localKeys = localKeyLines(blk)
+				}
+				appends[dest] = append(appends[dest], mt)
 				out.moves = append(out.moves, moveEvent{from: st.base, dest: dest, desc: blockDesc(blk)})
 			}
 		}
@@ -181,16 +188,28 @@ func processDir(dir string, bases []string, cfg config) dirOutcome {
 			abort = true
 			continue
 		}
-		existing := map[string]bool{}
+		existing := map[string]int{}
+		existingLocals := map[string]int{}
 		for _, blk := range f.Body.(*hclsyntax.Body).Blocks {
 			if n, ok := uniqueBlockLabels[blk.Type]; ok && len(blk.Labels) == n {
-				existing[blockDesc(blk)] = true
+				existing[blockDesc(blk)] = blk.TypeRange.Start.Line
+			}
+			if blk.Type == "locals" {
+				for name, line := range localKeyLines(blk) {
+					existingLocals[name] = line
+				}
 			}
 		}
 		for _, t := range texts {
-			if existing[t.desc] {
-				out.errs = append(out.errs, fmt.Sprintf("%s: duplicate %s (%s, %s)", dir, t.desc, t.from, dest))
+			if line, ok := existing[t.desc]; ok {
+				out.errs = append(out.errs, fmt.Sprintf("%s: duplicate %s (%s:%d, %s:%d)", dir, t.desc, t.from, t.line, dest, line))
 				abort = true
+			}
+			for _, name := range sortedKeys(t.localKeys) {
+				if line, ok := existingLocals[name]; ok {
+					out.errs = append(out.errs, fmt.Sprintf("%s: duplicate local %q (%s:%d, %s:%d)", dir, name, t.from, t.localKeys[name], dest, line))
+					abort = true
+				}
 			}
 		}
 		destOnDisk[dest] = b
@@ -287,32 +306,49 @@ var uniqueBlockLabels = map[string]int{
 	"check":     1,
 }
 
-// findDuplicates reports block addresses defined more than once across the
-// parsed files of a directory. Override files are exempt: duplicating an
-// address is exactly how Terraform's override mechanism works.
+// localKeyLines returns the keys defined by a locals block with the line
+// each is defined on.
+func localKeyLines(blk *hclsyntax.Block) map[string]int {
+	keys := map[string]int{}
+	for name, attr := range blk.Body.Attributes {
+		keys[name] = attr.NameRange.Start.Line
+	}
+	return keys
+}
+
+// findDuplicates reports block addresses — and locals keys, which Terraform
+// merges across blocks but requires to be unique — defined more than once
+// across the parsed files of a directory. Override files are exempt:
+// duplicating an address is exactly how Terraform's override mechanism works.
 func findDuplicates(states []*fileState) []string {
 	seen := map[string][]string{}
 	var order []string
+	add := func(key, loc string) {
+		if len(seen[key]) == 0 {
+			order = append(order, key)
+		}
+		seen[key] = append(seen[key], loc)
+	}
 	for _, st := range states {
 		if st.keepBlocks || st.parseErr {
 			continue
 		}
 		for _, blk := range st.blocks {
-			n, ok := uniqueBlockLabels[blk.Type]
-			if !ok || len(blk.Labels) != n {
-				continue
+			if n, ok := uniqueBlockLabels[blk.Type]; ok && len(blk.Labels) == n {
+				add(blockDesc(blk), fmt.Sprintf("%s:%d", st.base, blk.TypeRange.Start.Line))
 			}
-			key := blockDesc(blk)
-			if len(seen[key]) == 0 {
-				order = append(order, key)
+			if blk.Type == "locals" {
+				for name, line := range localKeyLines(blk) {
+					add(fmt.Sprintf("local %q", name), fmt.Sprintf("%s:%d", st.base, line))
+				}
 			}
-			seen[key] = append(seen[key], st.base)
 		}
 	}
 	var msgs []string
 	for _, key := range order {
-		if files := seen[key]; len(files) > 1 {
-			msgs = append(msgs, fmt.Sprintf("duplicate %s (%s)", key, strings.Join(files, ", ")))
+		if locs := seen[key]; len(locs) > 1 {
+			sort.Strings(locs)
+			msgs = append(msgs, fmt.Sprintf("duplicate %s (%s)", key, strings.Join(locs, ", ")))
 		}
 	}
 	return msgs

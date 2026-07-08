@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/bmatcuk/doublestar/v4"
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/zclconf/go-cty/cty"
@@ -27,8 +28,40 @@ type placeRule struct {
 
 // repoConfig is the parsed content of a .tforg.hcl file.
 type repoConfig struct {
-	dest  map[string]string // overrides of the built-in type mapping
-	rules []placeRule
+	dir    string            // directory the file was found in; ignore patterns are relative to it
+	dest   map[string]string // overrides of the built-in type mapping
+	rules  []placeRule
+	ignore []string
+}
+
+// matchesIgnore reports whether file matches any ignore pattern. Patterns
+// with a slash match the path relative to baseDir (doublestar globs, so
+// **/generated/** works); bare patterns match any single path component,
+// like .gitignore.
+func matchesIgnore(patterns []string, baseDir, file string) bool {
+	if len(patterns) == 0 {
+		return false
+	}
+	target := file
+	if baseDir != "" {
+		if rel, err := filepath.Rel(baseDir, file); err == nil && !strings.HasPrefix(rel, "..") {
+			target = rel
+		}
+	}
+	target = filepath.ToSlash(target)
+	for _, pat := range patterns {
+		if ok, _ := doublestar.Match(pat, target); ok {
+			return true
+		}
+		if !strings.Contains(pat, "/") {
+			for _, seg := range strings.Split(target, "/") {
+				if ok, _ := path.Match(pat, seg); ok {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // destFor resolves where a block belongs: place rules first (first match
@@ -97,8 +130,25 @@ func parseRepoConfig(src []byte, filename string) (*repoConfig, error) {
 	body := f.Body.(*hclsyntax.Body)
 	rc := &repoConfig{dest: map[string]string{}}
 
-	for name := range body.Attributes {
-		return nil, fmt.Errorf("%s: unexpected top-level attribute %q", filename, name)
+	for name, attr := range body.Attributes {
+		if name != "ignore" {
+			return nil, fmt.Errorf("%s: unexpected top-level attribute %q", filename, name)
+		}
+		v, vdiags := attr.Expr.Value(nil)
+		if vdiags.HasErrors() || !v.CanIterateElements() {
+			return nil, fmt.Errorf("%s: ignore must be a list of pattern strings", filename)
+		}
+		for it := v.ElementIterator(); it.Next(); {
+			_, ev := it.Element()
+			if ev.Type() != cty.String {
+				return nil, fmt.Errorf("%s: ignore must be a list of pattern strings", filename)
+			}
+			pat := ev.AsString()
+			if !doublestar.ValidatePattern(pat) {
+				return nil, fmt.Errorf("%s: bad ignore pattern %q", filename, pat)
+			}
+			rc.ignore = append(rc.ignore, pat)
+		}
 	}
 	for _, blk := range body.Blocks {
 		switch blk.Type {
@@ -177,6 +227,9 @@ func newConfigLoader(disabled bool, explicitPath string) (*configLoader, error) 
 		if err != nil {
 			return nil, err
 		}
+		if abs, err := filepath.Abs(explicitPath); err == nil {
+			rc.dir = filepath.Dir(abs)
+		}
 		l.explicit = rc
 	}
 	return l, nil
@@ -199,6 +252,7 @@ func (l *configLoader) forDir(dir string) (*repoConfig, error) {
 		if perr != nil {
 			return nil, perr
 		}
+		parsed.dir = dir
 		rc = parsed
 	} else if parent := filepath.Dir(dir); parent != dir {
 		parentRC, perr := l.forDir(parent)
